@@ -9,7 +9,7 @@ from io import BytesIO
 app = FastAPI(
     title="Audio Metrics Service",
     description="Compute average pitch and SNR from a WAV URL",
-    version="1.1.1"
+    version="1.1.2"
 )
 
 class PitchResponse(BaseModel):
@@ -24,28 +24,24 @@ def fetch_audio(url: str):
         raise HTTPException(400, f"Could not fetch audio: {resp.status_code}")
     return librosa.load(BytesIO(resp.content), sr=None, mono=True)
 
-def calculate_snr(y: np.ndarray) -> float:
-    intervals = librosa.effects.split(y, top_db=20)
-    if not intervals:
-        return 0.0
-    sig_energy = sum((y[s:e]**2).sum() for s, e in intervals)
-    tot_energy = (y**2).sum()
-    noise_energy = tot_energy - sig_energy
-    if noise_energy <= 0 or sig_energy <= 0:
-        return 0.0
-    return float(10 * np.log10(sig_energy / noise_energy))
-
 def calculate_avg_pitch(y: np.ndarray) -> float:
     f0, _, _ = librosa.pyin(y, fmin=50, fmax=500)
-    # filter out NaNs
     valid = f0[~np.isnan(f0)]
-    if valid.size == 0:
+    return float(np.mean(valid)) if valid.size else 0.0
+
+def calculate_snr(y: np.ndarray) -> float:
+    intervals = librosa.effects.split(y, top_db=20)
+    if len(intervals) == 0:
         return 0.0
-    return float(np.mean(valid))
+    sig = sum((y[s:e]**2).sum() for s, e in intervals)
+    tot = (y**2).sum()
+    noise = tot - sig
+    if sig <= 0 or noise <= 0:
+        return 0.0
+    return float(10 * np.log10(sig / noise))
 
 @app.exception_handler(Exception)
 async def all_exception_handler(request: Request, exc: Exception):
-    # Catch everything and return JSON
     return JSONResponse(
         status_code=getattr(exc, "status_code", 500),
         content={"error": str(exc)}
@@ -69,3 +65,6 @@ async def api_avg_pitch(url: HttpUrl = Query(..., description="WAV file URL")):
 async def api_snr(url: HttpUrl = Query(..., description="WAV file URL")):
     y, _ = fetch_audio(str(url))
     return SnrResponse(snrDb=calculate_snr(y))
+
+# To run:
+# python -m uvicorn main:app --reload --port 8000
